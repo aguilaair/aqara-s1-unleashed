@@ -103,6 +103,8 @@ class GeckoBehaviourPinTest {
               media.autoplay.block-webaudio: false
               browser.tabs.warnOnClose: false
               dom.disable_beforeunload: true
+              javascript.options.baselinejit.threshold: 30
+              javascript.options.ion.threshold: 500
 
             """.trimIndent(),
             f.readText(),

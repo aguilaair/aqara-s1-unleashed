@@ -91,6 +91,9 @@ class GeckoEngine(
             // Kiosk niceties.
             "browser.tabs.warnOnClose" to false,
             "dom.disable_beforeunload" to true,
+            // Experiment (#244): tier HA's card code up to the JITs sooner (defaults 100 and 1500).
+            "javascript.options.baselinejit.threshold" to 30,
+            "javascript.options.ion.threshold" to 500,
         )
         if (s.zoom > 0f) p["layout.css.devPixelsPerPx"] = s.zoom.toString()
 
