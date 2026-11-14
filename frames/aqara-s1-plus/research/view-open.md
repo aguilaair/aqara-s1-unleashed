@@ -33,8 +33,9 @@ thread running every task within 50 ms for 500 ms ([docs/perf.md](../../../docs/
 
    The first screen is drawn in under 1 s. The other 3.6 to 4.0 s is the main thread staying busy:
    a task of 1.1 to 1.4 s right after the first screen, then shorter ones of 160 to 900 ms. The
-   median is 4.7 s and the spread is ±5%, so a change smaller than about 5% needs three runs a side
-   to show.
+   median is 4.7 s and the spread is ±5% in these four. The clean v1 baseline s1rtc9 (#205 eb9c7af,
+   3 runs) gave 4852 ms with 4301 to 5395 ms, about ±11%. At that spread, three runs a side show only
+   a change of about 10% or more.
 
 2. **What the main thread does: a desktop Gecko profile of the same open** (2026-11-14, verified
    on desktop, inferred for the S1). `tools/perf-lab/profile-view.sh` serves Clarity's fake HA and
