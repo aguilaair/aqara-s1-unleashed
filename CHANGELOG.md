@@ -83,6 +83,12 @@ below as the release notes.
   Diagnostic section.
 
 ### Added
+- **A camera pane for panels with a camera.** On a tablet with a camera (not the S1), the panel can
+  wake its screen when someone walks up, using motion that ignores lights switching on, dusk and TV
+  light; no image leaves the panel for that. You can also let Home Assistant take snapshots, and
+  turn on an ONVIF and RTSP stream (ports 8554 and 8000) for Home Assistant's ONVIF integration,
+  Frigate or UniFi Protect, with its own username and password. Everything is off until you turn
+  it on, and *Camera privacy* closes the camera.
 - **The panel can be a Bluetooth proxy for Home Assistant.** Turn on *Bluetooth proxy* in the
   panel's settings or on setup's Panes step, and Home Assistant finds it by itself and hears the
   Bluetooth thermometers, plant sensors and tags near the panel. It only listens: devices that need a
