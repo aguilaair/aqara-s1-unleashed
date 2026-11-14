@@ -83,6 +83,7 @@ class VoiceEngineSwitchTest {
         c.onSubscribe(true)
         engine.controller = c
         engine.onMicFrame(ShortArray(1280))
+        engine.awaitWakeWord()
         return sent.firstOrNull { it.first == Msg.VOICE_ASSISTANT_REQUEST }?.second?.string(5)
     }
 

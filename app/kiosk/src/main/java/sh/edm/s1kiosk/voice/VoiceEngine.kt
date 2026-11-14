@@ -5,9 +5,15 @@ import sh.edm.s1kiosk.esphome.VoiceAssistantController
 import sh.edm.s1kiosk.esphome.WakeWordCatalog
 import sh.edm.esphome.WakeWordInfo
 import java.io.File
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionHandler
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+
+/** 2 s of 80 ms frames. */
+private const val WW_BACKLOG_FRAMES = 25
 
 /**
  * Microphone + on-device wake word, feeding the ESPHome voice assistant ([controller]).
@@ -28,6 +34,10 @@ import java.util.concurrent.TimeUnit
  * pick must not answer), the error is reported, and loading is retried every 30 s.
  *
  * [loadDetector] loads a word's model; null loads the real ones (tests pass a fake).
+ *
+ * The model runs on its own thread at normal priority, not on the microphone's: that one runs at
+ * URGENT_AUDIO (nice -19) and would take the CPU from the page's main thread (nice -10) whenever
+ * they share a core (#244). It holds [WW_BACKLOG_FRAMES] frames; past that the oldest is dropped.
  */
 class VoiceEngine(
     context: Context,
@@ -47,6 +57,17 @@ class VoiceEngine(
     private val microDir = File(modelsDir, "micro")
     private val exec: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "voice-main").apply { isDaemon = true } }
+    private var droppedFrames = 0 // mic thread: the rejection handler runs on the submitting thread
+    private val ww = ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue(WW_BACKLOG_FRAMES),
+        { r -> Thread(r, "voice-ww").apply { isDaemon = true; priority = Thread.NORM_PRIORITY } },
+        RejectedExecutionHandler { r, e ->
+            if (e.isShutdown) return@RejectedExecutionHandler
+            e.queue.poll()
+            e.queue.offer(r)
+            if (++droppedFrames % 50 == 1) VoiceLog.w("Wake word behind: dropped $droppedFrames frame(s) so far")
+        },
+    )
 
     private val load: (WakeWord) -> WakeDetector = loadDetector ?: { word ->
         when (word) {
@@ -83,6 +104,7 @@ class VoiceEngine(
     override fun stop() {
         running = false
         exec.shutdownNow()
+        ww.shutdownNow()
         mic?.stop()
         mic = null
         clear()
@@ -249,6 +271,17 @@ class VoiceEngine(
                 runSamples / 16000.0, runPeak / 32768.0, rms, gain))
             runPeak = 0; runSumSq = 0.0; runSamples = 0
         }
+        ww.execute { detect(frame) }
+    }
+
+    /** Tests: returns once every frame handed to the wake word so far has run. */
+    internal fun awaitWakeWord() {
+        if (!ww.isShutdown) ww.submit {}.get(5, TimeUnit.SECONDS)
+    }
+
+    /** voice-ww thread. */
+    private fun detect(frame: ShortArray) {
+        val c = controller
         val t0 = nowMs()
         var phrase = ""
         val score = synchronized(wwLock) {
@@ -263,7 +296,7 @@ class VoiceEngine(
         }
         val now = nowMs()
         if (now - t0 > 60 && ++slowFrames % 50 == 1) VoiceLog.w("Wake word inference slow: ${now - t0} ms per ${frame.size / 16} ms frame")
-        if (score >= threshold && now >= refractoryUntil && state == VoiceAssistantController.State.IDLE) {
+        if (score >= threshold && now >= refractoryUntil && c?.currentState == VoiceAssistantController.State.IDLE) {
             refractoryUntil = now + config.refractoryMs
             VoiceLog.i("Wake word '$phrase' detected (score %.3f)".format(score))
             c?.onWakeWord(phrase)
