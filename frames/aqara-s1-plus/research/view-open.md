@@ -202,12 +202,13 @@ it reaches panels if its services can do it (no reflash), else the boot patch. C
 - **Heat.** The S1 idles at 55 to 67 °C, and its first passive trip is 70 °C. A higher ceiling runs
   closer to it, and once the kernel throttles, the speed drops at moments no one chose. The panel
   sits in a closed wall box with no fan.
-- **Power.** 1.608 GHz needs a higher operating voltage than 1.2 GHz, and power rises faster than
-  the clock. The wall base's power budget, and the S1's own supply margin, aren't known. The panel
+- **Power.** 1.608 GHz most likely needs a higher operating voltage than 1.2 GHz (the kernel's
+  operating points weren't read), and power then rises faster than the clock. The wall base's power budget, and the S1's own supply margin, aren't known. The panel
   never sleeps, so idle power matters as much as peak.
 - **Why Aqara chose 1.2 GHz is unknown.** It may be heat, a supply limit or a measured lifetime.
 - **It hides the app's own cost.** A faster clock makes every CPU use cheaper, so app regressions
-  show later. Clarity reports the clock with each run; keep it in the report.
+  show later. Clarity records the maximum clock, not the one each run ran at; that would need adding
+  (a question for Clarity's owner).
 
 **How to undo it.** Option 1: set `persist.vendor.power.enable` back to its old value (or delete
 it) and restart the HAL or reboot; the HAL then writes its own ceilings again. Option 2: stop the
