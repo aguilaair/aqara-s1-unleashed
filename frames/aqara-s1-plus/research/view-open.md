@@ -2,9 +2,9 @@
 
 **Status (2026-11-14): partly answered.** The open is one thread's work: HA's frontend building
 the view's 50 cards on Gecko's content main thread, which is about two-thirds JavaScript. Background
-load is small. The CPU runs at 1.2 GHz of its 1.608 GHz, held there by Allwinner's power HAL, not
-by heat. Panel runs that split each core's time during an open, and the app-side candidates, are
-still pending.
+load is small. The CPU clock's ceiling moves: 1.2 GHz while Clarity loaded heavy, 1.512 GHz on an
+idle panel, never the SoC's 1.608 GHz. Why it moves isn't known yet. Panel runs that log the clock
+and temperatures through a whole Clarity run, and the app-side candidates, are still pending.
 
 Device: Aqara S1 Plus, Android 10 (`peony-perf1`), S1 Kiosk 0.4.3 builds of main (5d0a0d2),
 GeckoView 159, the radio in `thread_router`. Tools: Clarity v1 (#205 at aedb6c7d), desktop Firefox
@@ -121,7 +121,20 @@ thread running every task within 50 ms for 500 ms ([docs/perf.md](../../../docs/
    ```
    All four cores share one policy, and it sat at 1.2 GHz under full load. The thermal cooling device
    was off (55 °C, the first passive trip is 70 °C). [idle-cpu.md](idle-cpu.md) saw the same 1.2 GHz
-   with the screen on and 1.512 GHz with it off. `scaling_max_freq` and `scaling_governor` belong to
+   with the screen on and 1.512 GHz with it off (2026-11-12).
+
+   **The same night, idle, the ceiling was 1.512 GHz** (2026-11-14 03:12, verified by the root with
+   `tools/perf-lab/freq-around.sh`: screen on, the panel's own dashboard idle, CPU zone at 38.8 °C,
+   9 windows of 6 s at 20 Hz, about 1000 samples). The most common sample in every window was
+   1512000, with dips to 408000 to 1320000 as the load fell, and never 1608000. My own short traces
+   at 40 to 41 °C at 03:20 read the same range. So 1.2 GHz is not a fixed cap. It showed under load
+   during a Clarity run at about 55 °C, and with the screen on in idle-cpu.md (temperature not
+   recorded). Temperature, the load, the screen and the HAL's scene changes on Clarity's app restarts
+   are all still candidates.
+
+   `getprop sys.cpu_temp` read 67.2 and 67.5 at 01:35 and 03:20, while the CPU zone read 55 and
+   40 °C. So that property isn't the CPU zone's live value; what writes it, and whether anything
+   acts on it, is unknown. `scaling_max_freq` and `scaling_governor` belong to
    `system` (mode 660) and aren't readable over adb without root.
 
    Who sets it, read from the strings of `/vendor/lib/hw/power.peony.so` (Allwinner's "AW Power HAL",
@@ -129,10 +142,11 @@ thread running every task within 50 ms for 500 ms ([docs/perf.md](../../../docs/
    `/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq`, and has scenes named `NORMAL MODE`,
    `LAUNCH_MODE`, `HOME MODE`, `BENCHMARK MODE`, `BG_MUSIC MODE` and `BOOTCOMPLETE MODE`, the
    frequencies `1200000` and `1512000`, and `persist.vendor.power.enable` (`power_init disable scene
-   control`). So the 1.2 GHz is most likely the HAL's normal scene, and an app launch
-   (`POWER_HINT_LAUNCH`) probably lifts it for a moment (inferred from the names; which scene sets
-   which ceiling is not yet read from the code). If the
-   open scales with the clock, 1.608 GHz would take 4.7 s to about 3.5 s. That is untested. An app
+   control`). Its two numbers are the two ceilings seen, so the HAL very likely sets both, by scene
+   (inferred from the strings; which scene sets which, and on what, is not yet read from the code).
+   If an open runs at 1.2 GHz and scales with the clock, 1.512 GHz would take 4.7 s to about 3.7 s,
+   and 1.608 GHz to about 3.5 s. If it already runs at 1.512 GHz, only about 6% is left. Which clock
+   Clarity's opens ran at wasn't recorded; plan 1's trace records it. That is untested. An app
    can't change the scene: Android 10 gives apps no power hints, so this is a root-side question.
 
 ## Result
@@ -145,11 +159,11 @@ thread running every task within 50 ms for 500 ms ([docs/perf.md](../../../docs/
 | of which DOM | 11 to 17% | desktop profile |
 | of which layout and painting | about a tenth | desktop profile |
 | Background CPU from the kiosk | about 0.1 of one core at idle | verified (idle samples); not yet measured during an open |
-| The clock | 1.2 GHz of 1.608, set by the vendor's power HAL | verified (sysfs reads, HAL strings) |
+| The clock | 1.2 GHz under load in a Clarity run, 1.512 GHz idle, never 1.608 GHz; what sets it, and which clock the opens ran at, unknown | verified readings, cause untested |
 
 | Lever | Ceiling | Evidence | Where |
 |---|---|---|---|
-| The CPU clock: the HAL's normal scene caps it at 1.2 GHz | about 25% (4.7 → 3.5 s), if the open scales with the clock | verified cap, untested gain | Root side, not the app |
+| The CPU clock's ceiling (1.2 or 1.512 GHz, never 1.608) | from about 6% (if opens run at 1.512 GHz) to about 25% (if at 1.2 GHz) | readings verified, gain untested | Root side, not the app; maybe heat |
 | Wake word model off the urgent-audio thread | at most about 8% (0.4 s); likely under 3% | read from code and idle samples | App, `244-ww-thread` |
 | JIT tier-up thresholds | no change on desktop | verified on desktop (2 runs a side) | App prefs, `244-jit` |
 | Layout, paint and GC prefs | about a tenth at most | desktop profile | ruled out as a main lever |
@@ -165,15 +179,17 @@ the CPU clock the vendor leaves the S1 at.
 
 | Claim | Grade |
 |---|---|
-| The four cores share one cpufreq policy and ran at 1.2 GHz under full load, with the screen on | verified 2026-11-14 (30 samples while heavy loaded); [idle-cpu.md](idle-cpu.md) saw the same on 2026-11-12 |
-| The SoC offers up to 1.608 GHz (`scaling_available_frequencies`, `cpuinfo_max_freq`) | verified |
-| Heat didn't cause it: cooling state 0 at 55 °C, first passive trip 70 °C | verified (one reading) |
-| With the screen off the clock was 1.512 GHz | verified 2026-11-12 ([idle-cpu.md](idle-cpu.md)) |
-| Allwinner's power HAL (`power.peony.so`) writes `policy0/scaling_max_freq` by scene, with a normal scene, and `1200000` is one of its two ceilings | read (strings only, not the code) |
+| The four cores share one cpufreq policy and ran at 1.2 GHz under full load during a Clarity run, at about 55 °C | verified 2026-11-14 01:3x (30 samples while heavy loaded) |
+| With the screen on and idle, at 39 to 41 °C, the ceiling was 1.512 GHz | verified 2026-11-14 03:12 to 03:20 (about 1000 samples by the root, plus short traces) |
+| [idle-cpu.md](idle-cpu.md) saw 1.2 GHz with the screen on and 1.512 GHz with it off | verified 2026-11-12, temperatures not recorded |
+| No reading has ever shown 1.608 GHz, the SoC's top step (`scaling_available_frequencies`, `cpuinfo_max_freq`) | verified (every reading above) |
+| The kernel's thermal cooling didn't cause the 1.2 GHz: cooling state 0 at 55 °C, first passive trip 70 °C | verified (one reading). A softer step below the trip, in the HAL or a vendor service, isn't ruled out |
+| What switches between 1.2 and 1.512 GHz: temperature, load, the screen, or the HAL's scene on app restarts | unknown; plan 1's trace logs the clock, the three thermal zones, the cooling state and (as root) the ceiling and governor across a whole Clarity run |
+| Allwinner's power HAL (`power.peony.so`) writes `policy0/scaling_max_freq` by scene, and `1200000` and `1512000` are its two ceilings | read (strings only, not the code) |
 | `persist.vendor.power.enable` turns the HAL's scene control off at its start | read (strings: `persist.vendor.power.enable`, `power_init disable scene control`); the value it wants is not known |
 | An app launch lifts the ceiling for a moment | inferred from `LAUNCH_MODE`; untested |
-| A touch lifts it (a touch boost) | unknown; plan 1's step 1a samples the clock at 20 Hz around a tap and around an intent |
-| Opening typical at 1.608 GHz takes about 3.5 s | untested; plan C holds the ceiling at 1.608 GHz for three graded runs, only with the maintainer's OK |
+| A touch lifts it (a touch boost) | no: verified 2026-11-14 03:12 by the root. Three taps on a blank gap, three wake intents (`--es screen on`) and three windows with nothing done had the same clock mix before and after |
+| How much faster opens are at a higher ceiling | untested; plan C, only if plan 1 shows the opens ran at 1.2 GHz while the panel was cool, and only with the maintainer's OK |
 
 An app can't lift it. Android 10 has no power hints for apps (`PerformanceHintManager` is API 31),
 and the file belongs to `system`. It needs the root side.
@@ -192,8 +208,12 @@ built here):
    middle step, `1416000`) to `scaling_max_freq` after each scene change. The HAL changes scene on
    every app launch and screen change, so this means a loop or a trigger on those, which is
    fragile and fights the vendor's code. Not recommended.
-3. **A middle ceiling.** Either way, 1.416 or 1.512 GHz instead of 1.608 GHz trades some speed for
-   less heat. The thermal headroom decides which.
+3. **A middle ceiling.** Either way, 1.512 GHz (the HAL's own other ceiling) instead of 1.608 GHz
+   trades some speed for less heat. The thermal headroom decides which.
+
+If plan 1 shows the clock drops to 1.2 GHz as the panel warms, the drop is a thermal policy, and
+none of these is a fix: lifting it only trades the panel's heat for speed. The lever then is heat
+(the app's own CPU use, the wall box), not the ceiling.
 
 Either way it should be a setting, off by default until measured, with the radio bundle as the way
 it reaches panels if its services can do it (no reflash), else the boot patch. Changes in
@@ -206,7 +226,8 @@ it reaches panels if its services can do it (no reflash), else the boot patch. C
 - **Power.** 1.608 GHz most likely needs a higher operating voltage than 1.2 GHz (the kernel's
   operating points weren't read), and power then rises faster than the clock. The wall base's power budget, and the S1's own supply margin, aren't known. The panel
   never sleeps, so idle power matters as much as peak.
-- **Why Aqara chose 1.2 GHz is unknown.** It may be heat, a supply limit or a measured lifetime.
+- **Why the HAL drops to 1.2 GHz, and never uses 1.608 GHz, is unknown.** It may be heat, a supply
+  limit or a measured lifetime.
 - **It hides the app's own cost.** A faster clock makes every CPU use cheaper, so app regressions
   show later. Clarity records the maximum clock, not the one each run ran at; that would need adding
   (a question for Clarity's owner).
@@ -223,9 +244,10 @@ side.
   and the fake HA's frontend cache (`~/.cache/glassworks-perf`, fetched by Clarity on its first run).
   With `--prefs FILE` it adds `user_pref` lines, as for the JIT runs.
 - The clock and priorities: the read-only commands above.
-- The cores during an open (read-only, adds a little load): `tools/perf-lab/cpu-trace.sh <serial>
-  out.trace` while Clarity runs, then `python3 -I tools/perf-lab/cpu-align.py out.trace <clarity
-  out dir> --view typical-nocam`.
+- The cores, the clock and the temperatures during a Clarity run (read-only, adds a little load):
+  `tools/perf-lab/cpu-trace.sh <serial> out.trace [--su 'su 0']` while Clarity runs (with `--su` it
+  also reads the ceiling and governor), then `python3 -I tools/perf-lab/cpu-align.py out.trace
+  <clarity out dir> --timeline`. It ends by itself after `--seconds` (default 7200).
 - The clock around one action, at 20 Hz: `tools/perf-lab/freq-around.sh <serial> <label> '<action>'`.
   The sampling is read-only; the action (an `input tap`, an `am start`) is the operator's.
 
@@ -238,6 +260,4 @@ side.
 - How much a 1.608 GHz ceiling gives, and what it costs in heat (plan C). Which HAL scene sets
   which ceiling, and what `persist.vendor.power.enable` wants, from the code at
   `power_hint_platform`, `power_set_interactive_platform` and `power_init`.
-- Clarity opens views with `pushState` and no touch. A real tap on a view tab is an input event,
-  and Android's PowerManagerService passes user activity to the power HAL as an `INTERACTION` hint
-  (not checked in this build). Whether this HAL boosts on it is unknown: none of its strings name it.
+- What moves the ceiling between 1.2 and 1.512 GHz, and what writes `sys.cpu_temp` (plan 1's trace).
