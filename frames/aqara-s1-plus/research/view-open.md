@@ -1,10 +1,11 @@
 # Opening a view: where typical's 4.7 s goes on the S1 (#244)
 
-**Status (2026-11-14): partly answered.** The open is one thread's work: HA's frontend building
-the view's 50 cards on Gecko's content main thread, which is about two-thirds JavaScript. Background
-load is small. The CPU clock's ceiling moves: 1.2 GHz while Clarity loaded heavy, 1.512 GHz on an
-idle panel, never the SoC's 1.608 GHz. Why it moves isn't known yet. Panel runs that log the clock
-and temperatures through a whole Clarity run, and the app-side candidates, are still pending.
+**Status (2026-11-14): answered for the app; the levers left are outside it.** The open is one
+thread's work: HA's frontend building the view's 50 cards on Gecko's content main thread, about
+two-thirds JavaScript. On the panel (plan 1 step 1, a traced Clarity run) every open ran at
+1.512 GHz with the tab's process at 106 to 111% of a core and the four cores 62 to 95% busy. The
+kiosk's own work and the clock leave little to win. An earlier 1.2 GHz reading under load is still
+unexplained, but it didn't happen in that run.
 
 Device: Aqara S1 Plus, Android 10 (`peony-perf1`), S1 Kiosk 0.4.3 builds of main (5d0a0d2),
 GeckoView 159, the radio in `thread_router`. Tools: Clarity v1 (#205 at aedb6c7d), desktop Firefox
@@ -149,6 +150,42 @@ thread running every task within 50 ms for 500 ms ([docs/perf.md](../../../docs/
    Clarity's opens ran at wasn't recorded; plan 1's trace records it. That is untested. An app
    can't change the scene: Android 10 gives apps no power hints, so this is a root-side question.
 
+8. **Who uses the cores, and at what clock, during each open** (2026-11-14, verified by the root:
+   plan 1 step 1. Build A, main 5415f64b; Clarity #205 eb9c7af, one graded-only run;
+   `tools/perf-lab/cpu-trace.sh` without root, about 0.45 s per sample; `cpu-align.py`):
+
+   | View | Opens in | Device busy (4 cores) | Tab process | GPU process | Kiosk main process | `voice-mic` | Clock | CPU zone |
+   |---|---|---|---|---|---|---|---|---|
+   | light | 1413 ms | 75% | 100.9% of a core | 78.2% | 27.3% | 2.7% | 1512000 ×4 | 50.9 to 51.8 °C |
+   | typical-nocam | 5207 ms | 62% | 106.0% | 34.4% | 14.1% | 2.6% | 1512000 ×15 | 43.5 to 53.4 °C |
+   | typical (camera) | 5554 ms | 65% | 111.3% | 32.7% | 19.5% | 2.6% | 1512000 ×18 | 45.3 to 54.0 °C |
+   | heavy | 41250 ms | 95% | 110.9% | 69.5% | 30.9% | 2.9% | 1512000 ×85 | 50.9 to 62.2 °C |
+
+   Over the whole run, 1491 of 1600 samples read 1512000, 13 read 1608000 (during heavy, at 60 to
+   64 °C), and the rest were dips to 408000 to 1416000 between bursts (4 at 1200000). The cpufreq
+   cooling state was 0 in every sample, and the CPU zone stayed between 38.4 and 64.5 °C.
+   `sys.cpu_temp` read 67.5 throughout, so it's a fixed value, not a sensor.
+
+   What it shows:
+   - **The open is bound by one thread in the page's process.** The tab process holds a little over
+     one core; the device had a third of its cores free on typical-nocam. The trace reads the
+     process total, not Gecko's main thread on its own (the process's pid thread is Android's main
+     thread, idle: 9 jiffies over the run), so "the Gecko main thread is saturated" is inferred from
+     that total and from the harness's `busy_ms` (a 1.1 s task right after the first screen), not
+     measured per thread.
+   - **The clock was 1.512 GHz, the HAL's higher ceiling, in every open.** The 1.2 GHz seen under
+     load at about 55 °C (step 7) did not occur in this run, at the same or higher temperatures.
+     It is unexplained. 1.608 GHz would add at most about 6%.
+   - **The kiosk's own threads don't compete.** `voice-mic` (the wake word) used 2.6% of a core while
+     a third of the cores sat idle, so moving it off the urgent-audio thread (`244-ww-thread`) can't
+     gain anything measurable. The kiosk's main process (Gecko's parent and the app) used 14 to 31%.
+   - typical-nocam opened in 5207 ms here, inside s1rtc9's 4301 to 5395 ms. Its first screen was
+     drawn at 1417 ms.
+
+9. **A touch boost** (2026-11-14 03:12, verified by the root: `tools/perf-lab/freq-around.sh`, 20 Hz,
+   3 × nothing, a tap on a blank gap, the wake intent `--es screen on`). The clock mix was the same
+   before and after each, so Clarity's intent-driven opens don't miss a boost a real tap would get.
+
 ## Result
 
 | Part of the 4.7 s | Share | How sure |
@@ -158,20 +195,40 @@ thread running every task within 50 ms for 500 ms ([docs/perf.md](../../../docs/
 | of which HA's JavaScript | about two-thirds | desktop profile, inferred for the S1 |
 | of which DOM | 11 to 17% | desktop profile |
 | of which layout and painting | about a tenth | desktop profile |
-| Background CPU from the kiosk | about 0.1 of one core at idle | verified (idle samples); not yet measured during an open |
-| The clock | 1.2 GHz under load in a Clarity run, 1.512 GHz idle, never 1.608 GHz; what sets it, and which clock the opens ran at, unknown | verified readings, cause untested |
+| The page's process during the open | 106% of a core, device 62% busy | verified (step 8) |
+| Background CPU from the kiosk | main process 14%, the wake word 2.6% of a core during the open | verified (step 8) |
+| The clock | 1.512 GHz in every open of the traced run; an earlier 1.2 GHz under load is unexplained | verified (steps 7 and 8) |
 
 | Lever | Ceiling | Evidence | Where |
 |---|---|---|---|
-| The CPU clock's ceiling (1.2 or 1.512 GHz, never 1.608) | from about 6% (if opens run at 1.512 GHz) to about 25% (if at 1.2 GHz) | readings verified, gain untested | Root side, not the app; maybe heat |
-| Wake word model off the urgent-audio thread | at most about 8% (0.4 s); likely under 3% | read from code and idle samples | App, `244-ww-thread` |
-| JIT tier-up thresholds | no change on desktop | verified on desktop (2 runs a side) | App prefs, `244-jit` |
+| The CPU ceiling, 1.512 → 1.608 GHz | at most about 6% | verified clock (step 8) | Root side; not worth the heat. Plan C dropped |
+| Wake word model off the urgent-audio thread | about 0: 2.6% of a core with a third of the cores idle | verified (step 8) | App, `244-ww-thread`; dropped |
+| JIT tier-up thresholds | no change on desktop; the one app lever that acts on the bound thread | verified on desktop (2 runs a side) | App prefs, `244-jit`; plan 1 step 2 (J against A) |
+| A newer GeckoView | small: 159 is one release behind 160.0 (2026-11-04), and the desktop lab already ran 160 | read (Mozilla's Maven) | App dependency, routine |
+| HA's frontend's own work per card (Lit rendering, custom elements, shadow roots; the masonry view builds every card at once) | the bulk of the open | desktop profile | Upstream (HA's frontend), not the kiosk |
+| The dashboard's cost: fewer or lighter cards per view | large: light's 20 cards open in 1.4 s, typical's 50 in 4.3 to 5.4 s | verified (Clarity) | The dashboard's owner; the frame's docs can say so |
 | Layout, paint and GC prefs | about a tenth at most | desktop profile | ruled out as a main lever |
 | Content process priority | none: already foreground | verified | ruled out |
 | Memory pressure | none: 671 MB free at the peak | verified | ruled out |
 
-So the app alone has little to cut from this open. The big parts are HA's frontend's own work and
-the CPU clock the vendor leaves the S1 at.
+So the app has little left to cut from this open. It is HA's frontend's JavaScript on one Gecko
+thread, on a 1.5 GHz in-order core, and the kiosk barely competes for it. What remains:
+
+1. **Gecko prefs that act on the main thread's JavaScript.** The JIT thresholds are the one with a
+   mechanism (a quarter of the desktop open runs interpreted or compiling). Desktop showed no change;
+   the S1's in-order cores might. That is plan 1's step 2, J against A.
+2. **The GeckoView version.** The app is on 159; 160.0 is out. Bumping is routine upkeep, not a
+   speed plan: one release of SpiderMonkey and layout changes, and the lab's desktop profile already
+   ran 160. The APK should stay about the same size: native code is 74 of its 98 MB (s1rtc6's
+   `apk.parts_bytes`), most of it GeckoView's, and one release changes that little (not measured).
+   A 64-bit GeckoView would have the better JIT backend, but the S1's userspace is 32-bit
+   (`ro.product.cpu.abilist` is `armeabi-v7a,armeabi`), so it can't run one.
+3. **What HA's frontend does per card.** Upstream work in HA's frontend, outside the kiosk and the
+   project's rules (nothing gets installed in HA).
+4. **The dashboard's cost.** The same view with fewer or lighter cards opens much faster. That is the
+   dashboard owner's choice; the S1's docs can give the numbers so people can choose.
+5. **The clock.** At most about 6% more, with heat. Not worth it unless the 1.2 GHz drop turns out
+   to happen in real use.
 
 ## The CPU ceiling
 
@@ -189,13 +246,14 @@ the CPU clock the vendor leaves the S1 at.
 | `persist.vendor.power.enable` turns the HAL's scene control off at its start | read (strings: `persist.vendor.power.enable`, `power_init disable scene control`); the value it wants is not known |
 | An app launch lifts the ceiling for a moment | inferred from `LAUNCH_MODE`; untested |
 | A touch lifts it (a touch boost) | no: verified 2026-11-14 03:12 by the root. Three taps on a blank gap, three wake intents (`--es screen on`) and three windows with nothing done had the same clock mix before and after |
-| How much faster opens are at a higher ceiling | untested; plan C, only if plan 1 shows the opens ran at 1.2 GHz while the panel was cool, and only with the maintainer's OK |
+| How much faster opens are at a higher ceiling | moot for now: every open in the traced run (step 8) was already at 1.512 GHz, leaving about 6%. Plan C is dropped |
 
 An app can't lift it. Android 10 has no power hints for apps (`PerformanceHintManager` is API 31),
 and the file belongs to `system`. It needs the root side.
 
 **What a root-side fix would look like** (a separate issue, after the maintainer weighs in; not
-built here):
+built here). Step 8 found every open already at 1.512 GHz, so this is on hold. It stays here in case
+the 1.2 GHz drop shows up in real use:
 
 1. **Turn the HAL's scene control off at boot.** The root side sets `persist.vendor.power.enable`
    to the value that disables it, then restarts `vendor.power-hal-1-0` (or the next boot picks it
@@ -253,11 +311,14 @@ side.
 
 ## Open questions
 
-- How busy the four cores and the page's main thread are during an open on the S1, and at which
-  clock (the panel plan in #244, `cpu-trace.sh`).
-- Whether moving the wake word model off the urgent-audio thread (`244-ww-thread`) or lower JIT
-  thresholds (`244-jit`) move typical-nocam on the panel (three graded runs a side).
-- How much a 1.608 GHz ceiling gives, and what it costs in heat (plan C). Which HAL scene sets
-  which ceiling, and what `persist.vendor.power.enable` wants, from the code at
-  `power_hint_platform`, `power_set_interactive_platform` and `power_init`.
-- What moves the ceiling between 1.2 and 1.512 GHz, and what writes `sys.cpu_temp` (plan 1's trace).
+- Whether lower JIT thresholds (`244-jit`) move typical-nocam on the panel (plan 1 step 2: three
+  graded runs a side, against s1rtc9's ±11% spread).
+- Which HAL scene sets which ceiling, and what `persist.vendor.power.enable` wants, from the code at
+  `power_hint_platform`, `power_set_interactive_platform` and `power_init` (only needed if the
+  1.2 GHz drop turns out to matter).
+- What made the clock read 1.2 GHz under load at about 55 °C in step 7, when the traced run never did.
+  The next trace that catches it, with root (`--su 'su 0'`), would show the ceiling and governor
+  then.
+- What writes `sys.cpu_temp` (a fixed 67.5).
+- The S1's own split of the main thread's time. The desktop profile's split is inferred for the S1.
+  `simpleperf` on the tab process (root) would measure it.

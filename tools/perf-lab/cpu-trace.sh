@@ -11,8 +11,9 @@
 #
 #   ADB=... tools/perf-lab/cpu-trace.sh SERIAL OUT.trace [--seconds 7200] [--su 'su 0']
 #
-# --su: the command that runs a root shell on the device and reads its script from stdin (`su 0`
-# for the dev boot image's AOSP su; check with `adb shell 'echo id | su 0 sh'` first).
+# --su: the command that runs a root shell reading its script from stdin. On the dev boot image
+# (Magisk's su) that is `su 0` with nothing after it: Magisk hands any further argument to the shell
+# as a script file. Check first: `adb shell 'echo id | su 0'` prints uid=0(root).
 set -u
 SERIAL=$1 OUT=$2; shift 2
 SU="" SECONDS_MAX=7200
@@ -71,4 +72,4 @@ while [ ${up%.*} -lt $end ]; do
 done
 SH
 B64=$(printf 'SECONDS_MAX=%s\n%s\n' "$SECONDS_MAX" "$LOOP" | base64 | tr -d '\n')
-exec "$ADB" -s "$SERIAL" shell "echo $B64 | base64 -d | ${SU:+$SU }sh" > "$OUT"
+exec "$ADB" -s "$SERIAL" shell "echo $B64 | base64 -d | ${SU:-sh}" > "$OUT"

@@ -6,6 +6,8 @@
 # (nohup) and ends, writing back the value it read at its start, when the CPU zone passes MAX_C,
 # after MINUTES, or when `stop` creates the stop file. Only the panel's operator runs this, and on
 # the S1 only with the maintainer's OK (#244 plan C, frames/aqara-s1-plus/research/view-open.md).
+# --su: a root shell that reads its script from stdin; `su 0` (Magisk) by default. Check:
+# `adb shell 'echo id | su 0'` prints uid=0(root).
 #
 #   tools/perf-lab/pin-ceiling.sh SERIAL start KHZ [MINUTES=45] [MAX_C=65] [--su 'su 0']
 #   tools/perf-lab/pin-ceiling.sh SERIAL stop [--su 'su 0']     # stop file, then prints the log
@@ -21,7 +23,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 D=/data/local/tmp
-asroot() { "$ADB" -s "$SERIAL" shell "echo $(printf '%s\n' "$1" | base64 | tr -d '\n') | base64 -d | $SU sh"; }
+asroot() { "$ADB" -s "$SERIAL" shell "echo $(printf '%s\n' "$1" | base64 | tr -d '\n') | base64 -d | $SU"; }
 case $CMD in
   start)
     case $KHZ in 1200000|1320000|1416000|1512000|1608000) ;; *) echo "KHZ must be one of the SoC's steps from 1200000 up" >&2; exit 2 ;; esac
