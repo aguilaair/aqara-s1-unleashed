@@ -12,6 +12,8 @@ import dev.glassworks.engine.EngineSettings
 import dev.glassworks.engine.gecko.GeckoEngine
 import dev.glassworks.frame.Frame
 import dev.glassworks.manage.PanelCode
+import dev.glassworks.notifications.NotificationsDefinition
+import dev.glassworks.notifications.NotificationsHub
 import dev.glassworks.pane.Pane
 import dev.glassworks.pane.PaneDefinition
 import dev.glassworks.pane.SetupStep
@@ -59,6 +61,9 @@ class GlassworksRuntime(
 
     private var definitions: List<PaneDefinition>? = null
 
+    /** The notifications pane's state, for the overlay and the settings page (#118). */
+    val notifications = NotificationsHub()
+
     /**
      * One thread for the settings pages' work that must not run on the main thread and must keep its order
      * (Music's volume, sent to Music Assistant). Made on first use; idle, it is one parked daemon thread.
@@ -67,7 +72,7 @@ class GlassworksRuntime(
 
     /**
      * Every pane's definition, made once: their on/off, setup steps, settings sections and adb extras. The
-     * core's panes in the order the settings list them (voice, music, radio, Bluetooth proxy), then the frame's, then diagnostics.
+     * core's panes in the order the settings list them (voice, music, notifications, radio, Bluetooth proxy), then the frame's, then diagnostics.
      * MainActivity and KioskService ask for them first thing, before discovery can save an HA URL in
      * this process (the radio step's one-time check needs that).
      */
@@ -80,8 +85,13 @@ class GlassworksRuntime(
                 setUpBefore = { SetupState.setUpBefore(prefs.haBase != null, prefs.haSeen, prefs.apiEncryption, prefs.haSetupSkipped) },
                 readout = RadioDefinition.AppReadout(this, prefs.radio) { prefs.haBase },
             )
+            val notify = NotificationsDefinition(
+                prefs.paneFile("notifications"), notifications,
+                actionName = "esphome.${sh.edm.s1kiosk.esphome.PanelDevice.NAME.replace('-', '_')}_notify",
+                now = android.os.SystemClock::elapsedRealtime,
+            )
             val bluetoothProxy = BluetoothProxyDefinition(prefs.paneFile("bluetooth-proxy"), AndroidProxyRadio(app), ::BluetoothProxyPage)
-            listOf(AssistDefinition(prefs.paneFile("assist")), SendspinDefinition(prefs.paneFile("sendspin"), settingsWorker::execute), radio, bluetoothProxy) +
+            listOf(AssistDefinition(prefs.paneFile("assist")), SendspinDefinition(prefs.paneFile("sendspin"), settingsWorker::execute), notify, radio, bluetoothProxy) +
                 paneFrame.paneDefinitions(app) + DiagnosticsDefinition(prefs.paneFile("diagnostics"))
         }.also { definitions = it }
     }
