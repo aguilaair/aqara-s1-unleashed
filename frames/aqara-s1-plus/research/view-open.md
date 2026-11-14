@@ -128,8 +128,9 @@ thread running every task within 50 ms for 500 ms ([docs/perf.md](../../../docs/
    `/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq`, and has scenes named `NORMAL MODE`,
    `LAUNCH_MODE`, `HOME MODE`, `BENCHMARK MODE`, `BG_MUSIC MODE` and `BOOTCOMPLETE MODE`, the
    frequencies `1200000` and `1512000`, and `persist.vendor.power.enable` (`power_init disable scene
-   control`). So the 1.2 GHz is the HAL's normal scene, and an app launch (`POWER_HINT_LAUNCH`) is
-   what lifts it for a moment. Which scene sets which ceiling is not yet read from the code. If the
+   control`). So the 1.2 GHz is most likely the HAL's normal scene, and an app launch
+   (`POWER_HINT_LAUNCH`) probably lifts it for a moment (inferred from the names; which scene sets
+   which ceiling is not yet read from the code). If the
    open scales with the clock, 1.608 GHz would take 4.7 s to about 3.5 s. That is untested. An app
    can't change the scene: Android 10 gives apps no power hints, so this is a root-side question.
 
@@ -157,6 +158,62 @@ thread running every task within 50 ms for 500 ms ([docs/perf.md](../../../docs/
 So the app alone has little to cut from this open. The big parts are HA's frontend's own work and
 the CPU clock the vendor leaves the S1 at.
 
+## The CPU ceiling
+
+**What is known, and how sure.**
+
+| Claim | Grade |
+|---|---|
+| The four cores share one cpufreq policy and ran at 1.2 GHz under full load, with the screen on | verified 2026-11-14 (30 samples while heavy loaded); [idle-cpu.md](idle-cpu.md) saw the same on 2026-11-12 |
+| The SoC offers up to 1.608 GHz (`scaling_available_frequencies`, `cpuinfo_max_freq`) | verified |
+| Heat didn't cause it: cooling state 0 at 55 °C, first passive trip 70 °C | verified (one reading) |
+| With the screen off the clock was 1.512 GHz | verified 2026-11-12 ([idle-cpu.md](idle-cpu.md)) |
+| Allwinner's power HAL (`power.peony.so`) writes `policy0/scaling_max_freq` by scene, with a normal scene, and `1200000` is one of its two ceilings | read (strings only, not the code) |
+| `persist.vendor.power.enable` turns the HAL's scene control off at its start | read (strings: `persist.vendor.power.enable`, `power_init disable scene control`); the value it wants is not known |
+| An app launch lifts the ceiling for a moment | inferred from `LAUNCH_MODE`; untested |
+| A touch lifts it (a touch boost) | unknown; plan 1's step 1a samples the clock at 20 Hz around a tap and around an intent |
+| Opening typical at 1.608 GHz takes about 3.5 s | untested; plan C holds the ceiling at 1.608 GHz for three graded runs, only with the maintainer's OK |
+
+An app can't lift it. Android 10 has no power hints for apps (`PerformanceHintManager` is API 31),
+and the file belongs to `system`. It needs the root side.
+
+**What a root-side fix would look like** (a separate issue, after the maintainer weighs in; not
+built here):
+
+1. **Turn the HAL's scene control off at boot.** The root side sets `persist.vendor.power.enable`
+   to the value that disables it, then restarts `vendor.power-hal-1-0` (or the next boot picks it
+   up), and writes `scaling_max_freq` once, since the HAL no longer will. The kernel's own governor
+   and thermal control then decide. This is the smallest change, but it also turns off the HAL's
+   other scenes, such as the lower ceilings with the screen off or for background music, so idle
+   power could rise. The value it needs, and whether the HAL also stops touching the governor,
+   must be read from the code first.
+2. **Keep the HAL and raise only the normal ceiling.** An init service writes `1608000` (or a
+   middle step, `1416000`) to `scaling_max_freq` after each scene change. The HAL changes scene on
+   every app launch and screen change, so this means a loop or a trigger on those, which is
+   fragile and fights the vendor's code. Not recommended.
+3. **A middle ceiling.** Either way, 1.416 or 1.512 GHz instead of 1.608 GHz trades some speed for
+   less heat. The thermal headroom decides which.
+
+Either way it should be a setting, off by default until measured, with the radio bundle as the way
+it reaches panels if its services can do it (no reflash), else the boot patch. Changes in
+`tools/root` need a real panel before merge (hard rule 5).
+
+**Risks.**
+- **Heat.** The S1 idles at 55 to 67 °C, and its first passive trip is 70 °C. A higher ceiling runs
+  closer to it, and once the kernel throttles, the speed drops at moments no one chose. The panel
+  sits in a closed wall box with no fan.
+- **Power.** 1.608 GHz needs a higher operating voltage than 1.2 GHz, and power rises faster than
+  the clock. The wall base's power budget, and the S1's own supply margin, aren't known. The panel
+  never sleeps, so idle power matters as much as peak.
+- **Why Aqara chose 1.2 GHz is unknown.** It may be heat, a supply limit or a measured lifetime.
+- **It hides the app's own cost.** A faster clock makes every CPU use cheaper, so app regressions
+  show later. Clarity reports the clock with each run; keep it in the report.
+
+**How to undo it.** Option 1: set `persist.vendor.power.enable` back to its old value (or delete
+it) and restart the HAL or reboot; the HAL then writes its own ceilings again. Option 2: stop the
+service and reboot (sysfs is in RAM). Either way, the installer's restore removes the whole root
+side.
+
 ## How to reproduce
 
 - The desktop profile (this computer only, touches no device): `tools/perf-lab/profile-view.sh
@@ -167,6 +224,8 @@ the CPU clock the vendor leaves the S1 at.
 - The cores during an open (read-only, adds a little load): `tools/perf-lab/cpu-trace.sh <serial>
   out.trace` while Clarity runs, then `python3 -I tools/perf-lab/cpu-align.py out.trace <clarity
   out dir> --view typical-nocam`.
+- The clock around one action, at 20 Hz: `tools/perf-lab/freq-around.sh <serial> <label> '<action>'`.
+  The sampling is read-only; the action (an `input tap`, an `am start`) is the operator's.
 
 ## Open questions
 
@@ -174,9 +233,9 @@ the CPU clock the vendor leaves the S1 at.
   clock (the panel plan in #244, `cpu-trace.sh`).
 - Whether moving the wake word model off the urgent-audio thread (`244-ww-thread`) or lower JIT
   thresholds (`244-jit`) move typical-nocam on the panel (three graded runs a side).
-- How much a 1.608 GHz ceiling gives, and what it costs in heat. The S1 idles at 55 to 67 °C and
-  its first passive trip is 70 °C. Which HAL scene sets which ceiling, from the code at
-  `power_hint_platform` and `power_set_interactive_platform`.
+- How much a 1.608 GHz ceiling gives, and what it costs in heat (plan C). Which HAL scene sets
+  which ceiling, and what `persist.vendor.power.enable` wants, from the code at
+  `power_hint_platform`, `power_set_interactive_platform` and `power_init`.
 - Clarity opens views with `pushState` and no touch. A real tap on a view tab is an input event,
   and Android's PowerManagerService passes user activity to the power HAL as an `INTERACTION` hint
   (not checked in this build). Whether this HAL boosts on it is unknown: none of its strings name it.
